@@ -1,3 +1,5 @@
+mod block_cache;
+
 use bitcoin::block::Block;
 use bitcoin::consensus::Decodable;
 use hex::encode;

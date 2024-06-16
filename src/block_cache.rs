@@ -21,13 +21,15 @@ struct TreeNode {
     block: Block,
     parent: Option<BlockHash>,
     children: HashSet<BlockHash>,
+    orig_level: u32,
 }
 
 #[derive(Debug)]
 struct StagedBlocks {
     block_tree_root: Option<BlockHash>,
     block_nodes: HashMap<BlockHash, TreeNode>,
-    block_tree_depth: u16,
+    block_tree_depth: u32,
+    block_tree_roots_removed_cnt: u32,
 }
 
 impl TreeNode {
@@ -36,6 +38,7 @@ impl TreeNode {
             block,
             parent: None,
             children: HashSet::new(),
+            orig_level: 0,
         }
     }
 }
@@ -77,14 +80,9 @@ impl BlockCache {
         }
     }
 
-    fn remove_root_if_ready(&mut self, depth_threshold: u16) -> Option<Block> {
-        // when the depth in the whole tree reaches 100, the root block in the tree can migrate to the main chain
-        if self.staged_blocks.block_tree_depth >= depth_threshold {
-            let block = self.staged_blocks.remove_root();
-            Some(block)
-        } else {
-            None
-        }
+    /// when the depth in the whole tree reaches threshold, the root block in the tree can migrate to the main chain
+    fn remove_root_if_ready(&mut self, depth_threshold: u32) -> Option<Block> {
+        self.staged_blocks.remove_root_if_ready(depth_threshold)
     }
 }
 
@@ -94,6 +92,7 @@ impl StagedBlocks {
             block_tree_root: None,
             block_nodes: HashMap::new(),
             block_tree_depth: 0,
+            block_tree_roots_removed_cnt: 0,
         }
     }
 
@@ -102,14 +101,15 @@ impl StagedBlocks {
 
         // if this the tree is empty, this is the first root node
         if self.block_tree_root.is_none() {
+            new_node.orig_level = 1;
             self.block_tree_root = Some(block.hash.clone());
             self.block_nodes.insert(block.hash.clone(), new_node);
         } else if let Some(parent_node) = self.block_nodes.get_mut(&new_node.block.prev_hash) {
+            new_node.orig_level = parent_node.orig_level + 1;
             new_node.parent = Some(parent_node.block.hash.clone());
             parent_node.children.insert(block.hash.clone());
+            let depth = new_node.orig_level - self.block_tree_roots_removed_cnt;
             self.block_nodes.insert(block.hash.clone(), new_node);
-
-            let depth = self.calculate_depth_to_node(&block.hash);
             if self.block_tree_depth < depth {
                 self.block_tree_depth = depth;
             }
@@ -119,7 +119,11 @@ impl StagedBlocks {
         }
     }
 
-    fn remove_root(&mut self) -> Block {
+    fn remove_root_if_ready(&mut self, depth_threshold: u32) -> Option<Block> {
+        if self.block_tree_depth < depth_threshold {
+            return None;
+        }
+
         let root_hash = self.block_tree_root.as_ref().expect("root hash expected");
         let root_node = self
             .block_nodes
@@ -155,13 +159,14 @@ impl StagedBlocks {
         new_root_node.parent = None;
         self.block_tree_root = Some(new_root_node.block.hash.clone());
         self.block_tree_depth -= 1;
+        self.block_tree_roots_removed_cnt += 1;
 
         if let Some(losing_children) = losing_children_opt {
             // remove losing branches
             self.purge_nodes(&losing_children);
         }
 
-        root_node.block
+        Some(root_node.block)
     }
 
     fn purge_nodes(&mut self, block_hashes: &HashSet<BlockHash>) {
@@ -171,7 +176,7 @@ impl StagedBlocks {
         }
     }
 
-    fn calculate_depth_from_node(&self, block_hash: &BlockHash) -> u16 {
+    fn calculate_depth_from_node(&self, block_hash: &BlockHash) -> u32 {
         let mut max_depth = 0;
         let node = self.block_nodes.get(block_hash).expect("node expected");
         for child_hash in node.children.iter() {
@@ -181,20 +186,6 @@ impl StagedBlocks {
             }
         }
         max_depth + 1
-    }
-
-    fn calculate_depth_to_node(&self, block_hash: &BlockHash) -> u16 {
-        let mut depth = 0;
-        let mut node = self.block_nodes.get(block_hash);
-        while let Some(n) = node {
-            depth += 1;
-            if let Some(hash) = &n.parent {
-                node = self.block_nodes.get(&hash);
-            } else {
-                node = None;
-            }
-        }
-        depth
     }
 }
 
@@ -287,6 +278,7 @@ mod tests {
             .block_nodes
             .get(&BlockHash("K".to_string()))
             .expect("node expected");
+        assert_eq!(node.orig_level, 5);
         assert_eq!(
             node.parent.as_ref().expect("parent expected"),
             &BlockHash("H".to_string())

@@ -2,8 +2,16 @@ use bitcoin::BlockHash;
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
-//#[derive(Debug, PartialEq, Eq, Hash, Clone)]
-//pub struct BlockHash(String);
+/*
+Before a bitcoin::block::Block can be added to the main chain, the block is added to BlockCache with add_block() method.
+While in BlockCache, the block is kept in pending_full_blocks map.
+If the block is not out of order, BlockInfo for the block is staged in staged_blocks 'sliding' tree structure.
+if the block is out of order, BlockInfo for the block is kept in out_of_order_blocks until the block with hash==prev_hash is staged.
+Whenever the staged_blocks tree is deep-enough (e.g., 100 levels deep), the block correspending to the root node's BlockInfo can
+migrate to the main chain. Such a block is returned from remove_block_if_ready() method.
+When root is removed from the staged_blocks 'slding' tree, potential off-the-root re-org losing branched are purged,
+i.e., branches with less work, which is equivalent to to keeping the deepest subtree off-the-root.
+*/
 
 #[derive(Debug, Clone)]
 pub struct BlockInfo {

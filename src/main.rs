@@ -2,13 +2,14 @@ mod block_cache;
 
 use bitcoin::block::Block;
 use bitcoin::consensus::Decodable;
-use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 
 struct Importer {
     block_cache: block_cache::BlockCache,
+    prev_block_hash: Option<bitcoin::BlockHash>,
+    prev_block_height: u64,
 }
 
 fn main() {
@@ -39,6 +40,8 @@ impl Importer {
     fn new() -> Self {
         Importer {
             block_cache: block_cache::BlockCache::new(),
+            prev_block_hash: None,
+            prev_block_height: 0,
         }
     }
 
@@ -50,7 +53,7 @@ impl Importer {
             }
 
             let len = u32::from_le_bytes(file_bytes[i + 4..i + 8].try_into().unwrap()) as usize;
-            println!("read {} {}", i, len);
+            //println!("read {} {}", i, len);
             if len > 0 {
                 let bytes = &file_bytes[i + 8..i + 8 + len];
                 assert_eq!(
@@ -63,15 +66,29 @@ impl Importer {
                 );
                 let block = Block::consensus_decode(&mut bytes.to_vec().as_slice()).unwrap();
                 println!(
-                    "read block {:?} {} header: work {} prev_hash {:?}",
+                    "...read block {:?} {} header: work {} prev_hash {:?}",
                     block.block_hash(),
                     block.bip34_block_height().unwrap_or(0),
                     block.header.work(),
                     block.header.prev_blockhash
                 );
                 self.block_cache.add_block(block);
-                if let Some(_block_ready_to_import) = self.block_cache.remove_block_if_ready(100) {
-                    //TODO add to main chain
+                if let Some(block) = self.block_cache.remove_block_if_ready(70) {
+                    let block_hash = block.block_hash();
+                    let block_height = block.bip34_block_height().unwrap_or(0);
+                    println!(
+                        "*** ready to import block {:?} {} header: work {} prev_hash {:?}",
+                        block_hash,
+                        block_height,
+                        block.header.work(),
+                        block.header.prev_blockhash
+                    );
+                    if let Some(prev_block_hash) = self.prev_block_hash {
+                        assert_eq!(self.prev_block_height + 1, block_height);
+                        assert_eq!(prev_block_hash, block.header.prev_blockhash);
+                    }
+                    self.prev_block_hash = Some(block_hash);
+                    self.prev_block_height = block_height;
                 }
             }
 

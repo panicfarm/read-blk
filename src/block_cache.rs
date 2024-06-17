@@ -98,13 +98,16 @@ impl StagedBlocks {
 
     fn add_block(&mut self, block: &Block) {
         let mut new_node = TreeNode::new(block.clone());
-
-        // if this the tree is empty, this is the first root node
         if self.block_tree_root.is_none() {
+            // if this the tree is empty, this is the first root node
             new_node.orig_level = 1;
             self.block_tree_root = Some(block.hash.clone());
             self.block_nodes.insert(block.hash.clone(), new_node);
-        } else if let Some(parent_node) = self.block_nodes.get_mut(&new_node.block.prev_hash) {
+        } else {
+            let parent_node = self
+                .block_nodes
+                .get_mut(&new_node.block.prev_hash)
+                .expect("parent node expected");
             new_node.orig_level = parent_node.orig_level + 1;
             new_node.parent = Some(parent_node.block.hash.clone());
             parent_node.children.insert(block.hash.clone());
@@ -113,9 +116,6 @@ impl StagedBlocks {
             if self.block_tree_depth < depth {
                 self.block_tree_depth = depth;
             }
-        } else {
-            // assert that the tree already has a block with prev_hash, i.e., a parent for the new node
-            //TODO assert error
         }
     }
 

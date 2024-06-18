@@ -204,6 +204,15 @@ impl StagedBlocks {
                 .expect("parent node expected");
             new_node.orig_level = parent_node.orig_level + 1;
             new_node.parent = Some(parent_node.block_info.hash.clone());
+            if parent_node.children.len() >= 1 {
+                //TODO change to logger
+                println!(
+                    "+++ fork: new block hash {:?} prev_hash {:?}; sibling block hashes {:?}",
+                    block_info.hash,
+                    block_info.prev_hash,
+                    parent_node.children
+                );
+            }
             parent_node.children.insert(block_info.hash.clone());
             let depth = new_node.orig_level - self.root_removed_cnt;
             self.nodes.insert(block_info.hash.clone(), new_node);

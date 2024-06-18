@@ -14,6 +14,7 @@ struct Importer {
 
 fn main() {
     let dir_path = "/home/ghost/dat/bitcoin/blocks/"; //bitcoin core leveldb
+    let dir_path = "/fusionio0/btccore/dat/blocks/";
     let mut file_num = 0; //1328;
     let mut importer = Importer::new();
     loop {
@@ -115,8 +116,14 @@ impl Importer {
                 block.header.prev_blockhash
             );
             if let Some(prev_block_hash) = self.prev_block_hash {
-                if block_height > 0 {
-                    assert_eq!(self.prev_block_height + 1, block_height);
+                if block_height > 0 && self.prev_block_height > 0 {
+                    if self.prev_block_height + 1 != block_height {
+                        println!(
+                            "!!! WARNING: prev imported block {:?} {}, current block {:?} {} prev_hash {:?}",
+                            prev_block_hash, self.prev_block_height,
+                            block_hash, block_height, block.header.prev_blockhash
+                        );
+                    }
                 }
                 assert_eq!(prev_block_hash, block.header.prev_blockhash);
             }

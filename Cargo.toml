@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 bitcoin = "0.32"
 hex = "0.4"
+hex_lit = "0.1"

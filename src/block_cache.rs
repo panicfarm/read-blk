@@ -90,6 +90,10 @@ impl BlockCache {
 
     pub fn add_block(&mut self, block: bitcoin::block::Block) {
         let block_info = BlockInfo::new(&block.block_hash(), &block.header.prev_blockhash);
+        self.add_block_impl(&block_info, block);
+    }
+
+    fn add_block_impl(&mut self, block_info: &BlockInfo, block: bitcoin::block::Block) {
         self.pending_full_blocks.insert(block_info.hash, block);
         self.add_block_info(&block_info);
     }
@@ -125,6 +129,14 @@ impl BlockCache {
 
     /// when the depth in the whole tree reaches threshold, the root block_info in the tree can migrate to the main chain
     pub fn remove_block_if_ready(&mut self, depth_threshold: u32) -> Option<bitcoin::Block> {
+        let (_, block_opt) = self.remove_block_if_ready_impl(depth_threshold);
+        block_opt
+    }
+
+    fn remove_block_if_ready_impl(
+        &mut self,
+        depth_threshold: u32,
+    ) -> (Option<BlockInfo>, Option<bitcoin::Block>) {
         let (block_info_opt, losing_children_opt) = self
             .staged_blocks
             .remove_block_info_if_ready(depth_threshold);
@@ -132,9 +144,10 @@ impl BlockCache {
             if let Some(losing_children) = losing_children_opt {
                 self.purge_losing_blocks(&losing_children);
             }
-            self.pending_full_blocks.remove(&block_info.hash)
+            let block_opt = self.pending_full_blocks.remove(&block_info.hash);
+            (Some(block_info), block_opt)
         } else {
-            None
+            (None, None)
         }
     }
 
@@ -154,7 +167,7 @@ impl BlockCache {
             //TODO change to logger
             println!(
                 "xxx purged losing block {:?} {} header: work {} prev_hash {:?}",
-                block.block_hash(),
+                hash,
                 block.bip34_block_height().unwrap_or(0),
                 block.header.work(),
                 block.header.prev_blockhash
@@ -272,6 +285,8 @@ impl StagedBlocks {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bitcoin::consensus::encode::deserialize;
+    use hex_lit::hex;
 
     fn create_block_hash(hash: &str) -> BlockHash {
         BlockHash::from_str(&hash.repeat(64)).unwrap()
@@ -319,10 +334,12 @@ mod tests {
             create_block_info("B", "A"), // Level 5
             create_block_info("C", "B"), // Level 6
         ];
+        const BLOCK_HEX: &str = "0200000035ab154183570282ce9afc0b494c9fc6a3cfea05aa8c1add2ecc56490000000038ba3d78e4500a5a7570dbe61960398add4410d278b21cd9708e6d9743f374d544fc055227f1001c29c1ea3b0101000000010000000000000000000000000000000000000000000000000000000000000000ffffffff3703a08601000427f1001c046a510100522cfabe6d6d0000000000000000000068692066726f6d20706f6f6c7365727665726aac1eeeed88ffffffff0100f2052a010000001976a914912e2b234f941f30b18afbb4fa46171214bf66c888ac00000000";
+        let dummy_block: bitcoin::Block = deserialize(&hex!(BLOCK_HEX)).unwrap();
 
         // Add blocks to the tree
         for block_info in &blocks {
-            block_cache.add_block_info(block_info);
+            block_cache.add_block_impl(block_info, dummy_block.clone());
         }
         //dbg!(&block_cache);
         assert_eq!(block_cache.staged_blocks.tree_depth, 7);
@@ -331,8 +348,7 @@ mod tests {
 
         let expected_roots = vec!["0", "2", "4"];
         for expected_root in expected_roots {
-            let (block_info_opt, _losing_children_opt) =
-                block_cache.staged_blocks.remove_block_info_if_ready(4);
+            let (block_info_opt, _block_opt) = block_cache.remove_block_if_ready_impl(4);
             let block_info = block_info_opt.expect("root removal expected");
             assert_eq!(
                 &block_info.hash,

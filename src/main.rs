@@ -13,7 +13,7 @@ struct Importer {
 }
 
 fn main() {
-    let dir_path = "/home/ghost/dat/bitcoin/blocks/"; //bitcoin core leveldb
+    let _dir_path = "/home/ghost/dat/bitcoin/blocks/"; //bitcoin core leveldb
     let dir_path = "/fusionio0/btccore/dat/blocks/";
     let mut file_num = 0; //1328;
     let mut importer = Importer::new();
@@ -70,7 +70,7 @@ impl Importer {
     fn read_blocks(&mut self, file_bytes: Vec<u8>) {
         let mut i = 0;
         loop {
-            if i == file_bytes.len() {
+            if i >= file_bytes.len() {
                 break;
             }
 

@@ -14,7 +14,7 @@ struct Importer {
 
 fn main() {
     let dir_path = "/home/ghost/dat/bitcoin/blocks/"; //bitcoin core leveldb
-    let mut file_num = 1328;
+    let mut file_num = 0; //1328;
     let mut importer = Importer::new();
     loop {
         let file_name = format!("blk{:05}.dat", file_num);
@@ -33,6 +33,27 @@ fn main() {
             }
         }
         file_num += 1;
+
+        /*if file_num == 2 {
+            break;
+        }*/
+    }
+
+    while importer.block_cache.staged_cnt() > 0 {
+        importer.import_block_if_ready(0);
+    }
+
+    if importer.block_cache.out_of_order_cnt() > 0 {
+        println!(
+            "!!! WARNING: {} out of order blocks remained",
+            importer.block_cache.out_of_order_cnt()
+        );
+        assert_eq!(
+            importer.block_cache.pending_cnt(),
+            importer.block_cache.out_of_order_cnt()
+        );
+    } else {
+        assert_eq!(importer.block_cache.pending_cnt(), 0);
     }
 }
 
@@ -73,26 +94,34 @@ impl Importer {
                     block.header.prev_blockhash
                 );
                 self.block_cache.add_block(block);
-                if let Some(block) = self.block_cache.remove_block_if_ready(70) {
-                    let block_hash = block.block_hash();
-                    let block_height = block.bip34_block_height().unwrap_or(0);
-                    println!(
-                        "*** ready to import block {:?} {} header: work {} prev_hash {:?}",
-                        block_hash,
-                        block_height,
-                        block.header.work(),
-                        block.header.prev_blockhash
-                    );
-                    if let Some(prev_block_hash) = self.prev_block_hash {
-                        assert_eq!(self.prev_block_height + 1, block_height);
-                        assert_eq!(prev_block_hash, block.header.prev_blockhash);
-                    }
-                    self.prev_block_hash = Some(block_hash);
-                    self.prev_block_height = block_height;
-                }
             }
 
             i += 8 + len;
+
+            self.import_block_if_ready(100);
+        }
+    }
+
+    fn import_block_if_ready(&mut self, cache_threshold: u32) {
+        // check if the top (FIFO) block in the cache is ready for import
+        if let Some(block) = self.block_cache.remove_block_if_ready(cache_threshold) {
+            let block_hash = block.block_hash();
+            let block_height = block.bip34_block_height().unwrap_or(0);
+            println!(
+                "*** ready to import block {:?} {} header: work {} prev_hash {:?}",
+                block_hash,
+                block_height,
+                block.header.work(),
+                block.header.prev_blockhash
+            );
+            if let Some(prev_block_hash) = self.prev_block_hash {
+                if block_height > 0 {
+                    assert_eq!(self.prev_block_height + 1, block_height);
+                }
+                assert_eq!(prev_block_hash, block.header.prev_blockhash);
+            }
+            self.prev_block_hash = Some(block_hash);
+            self.prev_block_height = block_height;
         }
     }
 }

@@ -10,7 +10,7 @@ if the block is out of order, BlockInfo for the block is kept in out_of_order_bl
 Whenever the staged_blocks tree is deep-enough (e.g., 100 levels deep), the block correspending to the root node's BlockInfo can
 migrate to the main chain. Such a block is returned from remove_block_if_ready() method.
 When root is removed from the staged_blocks 'slding' tree, potential off-the-root re-org losing branched are purged,
-i.e., branches with less work, which is equivalent to to keeping the deepest subtree off-the-root.
+i.e., branches with less work, which is equivalent to keeping the deepest subtree off-the-root.
 */
 
 #[derive(Debug, Clone)]
@@ -31,6 +31,9 @@ struct TreeNode {
     block_info: BlockInfo,
     parent: Option<BlockHash>,
     children: HashSet<BlockHash>,
+    // orig_level stars from 1 for the first node added to the tree.
+    // new node's orig_level is parent node's orig_level+1.
+    // new node's depth is calculated as: orig_level - root_removed_cnt.
     orig_level: u32,
 }
 
@@ -38,7 +41,9 @@ struct TreeNode {
 struct StagedBlocks {
     tree_root: Option<BlockHash>,
     nodes: HashMap<BlockHash, TreeNode>,
+    // maintained every time a new node is added to the tree
     tree_depth: u32,
+    // incremented every time a root node is removed
     root_removed_cnt: u32,
 }
 
@@ -69,6 +74,18 @@ impl BlockCache {
             out_of_order_blocks: HashMap::new(),
             staged_blocks: StagedBlocks::new(),
         }
+    }
+
+    pub fn pending_cnt(&self) -> usize {
+        self.pending_full_blocks.len()
+    }
+
+    pub fn staged_cnt(&self) -> usize {
+        self.staged_blocks.nodes.len()
+    }
+
+    pub fn out_of_order_cnt(&self) -> usize {
+        self.out_of_order_blocks.len()
     }
 
     pub fn add_block(&mut self, block: bitcoin::block::Block) {
@@ -108,13 +125,41 @@ impl BlockCache {
 
     /// when the depth in the whole tree reaches threshold, the root block_info in the tree can migrate to the main chain
     pub fn remove_block_if_ready(&mut self, depth_threshold: u32) -> Option<bitcoin::Block> {
-        if let Some(block_info) = self
+        let (block_info_opt, losing_children_opt) = self
             .staged_blocks
-            .remove_block_info_if_ready(depth_threshold)
-        {
+            .remove_block_info_if_ready(depth_threshold);
+        if let Some(block_info) = block_info_opt {
+            if let Some(losing_children) = losing_children_opt {
+                self.purge_losing_blocks(&losing_children);
+            }
             self.pending_full_blocks.remove(&block_info.hash)
         } else {
             None
+        }
+    }
+
+    // Staging tree's nodes from the losing off-the-removed-root subtrees are removed from the nodes map and
+    // the corresponding blocks are removed from the pending blocks map
+    fn purge_losing_blocks(&mut self, block_hashes: &HashSet<BlockHash>) {
+        for hash in block_hashes.iter() {
+            let block = self
+                .pending_full_blocks
+                .remove(hash)
+                .expect("full block expected");
+            let node = self
+                .staged_blocks
+                .nodes
+                .remove(hash)
+                .expect("node expected");
+            //TODO change to logger
+            println!(
+                "xxx purged losing block {:?} {} header: work {} prev_hash {:?}",
+                block.block_hash(),
+                block.bip34_block_height().unwrap_or(0),
+                block.header.work(),
+                block.header.prev_blockhash
+            );
+            self.purge_losing_blocks(&node.children);
         }
     }
 }
@@ -129,6 +174,9 @@ impl StagedBlocks {
         }
     }
 
+    // A new tree node is created for the provided block_info. If the tree is empty, the new new becomes the root.
+    // Otherwise, the new node becomes the child of the node with hash equal to block_info.prev_hash.
+    // Tree depth is adjusted if the addition of the new node makese the tree deeper.
     fn add_block_info(&mut self, block_info: &BlockInfo) {
         let mut new_node = TreeNode::new(block_info.clone());
         if self.tree_root.is_none() {
@@ -152,16 +200,24 @@ impl StagedBlocks {
         }
     }
 
-    fn remove_block_info_if_ready(&mut self, depth_threshold: u32) -> Option<BlockInfo> {
-        if self.tree_depth < depth_threshold {
-            return None;
+    // When the depth in the whole tree reaches threshold, the root of the tree is removed and the tree shifts up.
+    // The root's child node that has the deepest subtree becomes new root.
+    // The block correspnding to the removed root can migrate to the main chain.
+    // If the root is removed, returns BlockInfo of the removed root and HashSet of block hashes of the losing children under the root.
+    fn remove_block_info_if_ready(
+        &mut self,
+        depth_threshold: u32,
+    ) -> (Option<BlockInfo>, Option<HashSet<BlockHash>>) {
+        if self.tree_depth < depth_threshold || self.tree_depth == 0 {
+            return (None, None);
         }
 
         let root_hash = self.tree_root.as_ref().expect("root hash expected");
         let root_node = self.nodes.remove(root_hash).expect("root node expected");
         let mut new_root_node_opt = None;
         let mut losing_children_opt = None;
-        if root_node.children.len() > 1 {
+        let child_cnt = root_node.children.len();
+        if child_cnt > 1 {
             // if the root has more than one child, leave only the child that has the deepest subtree under it
             let mut child_hash_with_deepest_subtree = None;
             let mut max_subtree_depth = 0;
@@ -178,32 +234,26 @@ impl StagedBlocks {
             let mut losing_children = root_node.children.clone();
             losing_children.remove(winning_child_hash);
             losing_children_opt = Some(losing_children);
-        } else {
-            assert_eq!(root_node.children.len(), 1);
-            for child_hash in root_node.children.iter() {
-                new_root_node_opt = self.nodes.get_mut(child_hash);
-            }
+        } else if child_cnt == 1 {
+            let child_hash = root_node
+                .children
+                .iter()
+                .last()
+                .expect("child hash expected");
+            new_root_node_opt = self.nodes.get_mut(child_hash);
         }
 
-        let new_root_node = new_root_node_opt.expect("new root node expected");
-        new_root_node.parent = None;
-        self.tree_root = Some(new_root_node.block_info.hash.clone());
         self.tree_depth -= 1;
         self.root_removed_cnt += 1;
 
-        if let Some(losing_children) = losing_children_opt {
-            // remove losing branches
-            self.purge_nodes(&losing_children);
+        if let Some(new_root_node) = new_root_node_opt {
+            new_root_node.parent = None;
+            self.tree_root = Some(new_root_node.block_info.hash.clone());
+        } else {
+            self.tree_root = None;
         }
 
-        Some(root_node.block_info)
-    }
-
-    fn purge_nodes(&mut self, block_hashes: &HashSet<BlockHash>) {
-        for hash in block_hashes.iter() {
-            let node = self.nodes.remove(hash).expect("node expected");
-            self.purge_nodes(&node.children);
-        }
+        (Some(root_node.block_info), losing_children_opt)
     }
 
     fn calculate_depth_from_node(&self, block_hash: &BlockHash) -> u32 {
@@ -275,22 +325,22 @@ mod tests {
             block_cache.add_block_info(block_info);
         }
         //dbg!(&block_cache);
-        assert!(block_cache.out_of_order_blocks.is_empty());
         assert_eq!(block_cache.staged_blocks.tree_depth, 7);
+        assert_eq!(block_cache.staged_cnt(), 13);
+        assert_eq!(block_cache.out_of_order_cnt(), 0);
 
         let expected_roots = vec!["0", "2", "4"];
         for expected_root in expected_roots {
-            if let Some(removed_block) = block_cache.staged_blocks.remove_block_info_if_ready(4) {
-                assert_eq!(
-                    &removed_block.hash,
-                    &create_block_hash(expected_root),
-                    "expected root: {}, but got: {:?}",
-                    expected_root,
-                    removed_block.hash
-                );
-            } else {
-                println!("expected to remove root but none was removed");
-            }
+            let (block_info_opt, _losing_children_opt) =
+                block_cache.staged_blocks.remove_block_info_if_ready(4);
+            let block_info = block_info_opt.expect("root removal expected");
+            assert_eq!(
+                &block_info.hash,
+                &create_block_hash(expected_root),
+                "expected root: {}, but got: {:?}",
+                expected_root,
+                block_info.hash
+            );
         }
         assert_eq!(block_cache.staged_blocks.tree_depth, 4);
         assert_eq!(block_cache.staged_blocks.root_removed_cnt, 3);
